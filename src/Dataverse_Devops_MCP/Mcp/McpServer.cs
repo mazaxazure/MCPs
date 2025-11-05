@@ -1,7 +1,9 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Dataverse_Devops_MCP.Models;
+using Dataverse_Devops_MCP.Models.Planning;
 using Dataverse_Devops_MCP.Services;
+using Dataverse_Devops_MCP.Services.Planning;
 
 namespace Dataverse_Devops_MCP.Mcp;
 
@@ -9,12 +11,26 @@ public class McpServer
 {
     private readonly ILogger<McpServer> _logger;
     private readonly IDataverseService _dataverseService;
+    private readonly IDevOpsService _devOpsService;
+    private readonly DocumentTaskParser _documentTaskParser;
+    private readonly ScheduleInferenceService _scheduleInferenceService;
+    private readonly TaskPlanner _taskPlanner;
     private readonly JsonSerializerOptions _jsonOptions;
 
-    public McpServer(ILogger<McpServer> logger, IDataverseService dataverseService)
+    public McpServer(
+        ILogger<McpServer> logger,
+        IDataverseService dataverseService,
+        IDevOpsService devOpsService,
+        DocumentTaskParser documentTaskParser,
+        ScheduleInferenceService scheduleInferenceService,
+        TaskPlanner taskPlanner)
     {
         _logger = logger;
         _dataverseService = dataverseService;
+        _devOpsService = devOpsService;
+        _documentTaskParser = documentTaskParser;
+        _scheduleInferenceService = scheduleInferenceService;
+        _taskPlanner = taskPlanner;
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -352,6 +368,261 @@ public class McpServer
                     },
                     required = new[] { "entityLogicalName" }
                 }
+            },
+            // Planning tools
+            new()
+            {
+                Name = "parse_document_to_tasks",
+                Description = "Extracts tasks from a document (PDF/DOCX/MD/TXT) using heuristic rules",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["path"] = new
+                        {
+                            type = "string",
+                            description = "The absolute path to the document file"
+                        },
+                        ["language"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The language of the document for better parsing"
+                        }
+                    },
+                    required = new[] { "path" }
+                }
+            },
+            new()
+            {
+                Name = "infer_schedule_from_document",
+                Description = "Infers project schedule (start date, duration, sprint length) from document text and tasks",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["rawText"] = new
+                        {
+                            type = "string",
+                            description = "The raw text from the document"
+                        },
+                        ["tasks"] = new
+                        {
+                            type = "array",
+                            description = "The list of parsed tasks",
+                            items = new { type = "object" }
+                        },
+                        ["defaultCapacityHoursPerSprint"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Default capacity in hours per sprint (default: 80)"
+                        }
+                    },
+                    required = new[] { "rawText", "tasks" }
+                }
+            },
+            new()
+            {
+                Name = "plan_tasks_into_iterations",
+                Description = "Assigns tasks to iterations based on schedule, capacity, and dependencies",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["tasks"] = new
+                        {
+                            type = "array",
+                            description = "The list of parsed tasks",
+                            items = new { type = "object" }
+                        },
+                        ["schedule"] = new
+                        {
+                            type = "object",
+                            description = "The inferred project schedule"
+                        }
+                    },
+                    required = new[] { "tasks", "schedule" }
+                }
+            },
+            new()
+            {
+                Name = "create_ado_project_from_tasks",
+                Description = "Adds iterations and work items to an existing Azure DevOps project from a task plan. The project must already exist in Azure DevOps.",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["plan"] = new
+                        {
+                            type = "object",
+                            description = "The task plan with iterations"
+                        },
+                        ["schedule"] = new
+                        {
+                            type = "object",
+                            description = "The project schedule"
+                        },
+                        ["digest"] = new
+                        {
+                            type = "string",
+                            description = "The digest of the source document for idempotency"
+                        },
+                        ["teamName"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The team name (defaults to project name)"
+                        }
+                    },
+                    required = new[] { "plan", "schedule", "digest" }
+                }
+            },
+            new()
+            {
+                Name = "run_document_to_ado_project",
+                Description = "End-to-end pipeline: parses document, infers schedule, plans tasks, and adds them to an existing Azure DevOps project configured in settings",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["path"] = new
+                        {
+                            type = "string",
+                            description = "The absolute path to the document file"
+                        }
+                    },
+                    required = new[] { "path" }
+                }
+            },
+            // Azure DevOps work item management tools
+            new()
+            {
+                Name = "create_work_item",
+                Description = "Creates a new work item in Azure DevOps",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["title"] = new
+                        {
+                            type = "string",
+                            description = "The title of the work item"
+                        },
+                        ["description"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The description of the work item"
+                        },
+                        ["workItemType"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The work item type (Task, User Story, Bug, etc.). Defaults to 'Task'"
+                        },
+                        ["priority"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Priority (1-4). Defaults to 3"
+                        },
+                        ["estimatedHours"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Estimated hours to complete"
+                        },
+                        ["tags"] = new
+                        {
+                            type = "array",
+                            description = "Optional: Array of tags",
+                            items = new { type = "string" }
+                        }
+                    },
+                    required = new[] { "title" }
+                }
+            },
+            new()
+            {
+                Name = "update_work_item",
+                Description = "Updates an existing work item in Azure DevOps",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["workItemId"] = new
+                        {
+                            type = "number",
+                            description = "The ID of the work item to update"
+                        },
+                        ["fields"] = new
+                        {
+                            type = "object",
+                            description = "Dictionary of field names and values to update (e.g., 'System.Title', 'System.State', 'System.AssignedTo')"
+                        }
+                    },
+                    required = new[] { "workItemId", "fields" }
+                }
+            },
+            new()
+            {
+                Name = "delete_work_item",
+                Description = "Deletes a work item from Azure DevOps",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["workItemId"] = new
+                        {
+                            type = "number",
+                            description = "The ID of the work item to delete"
+                        }
+                    },
+                    required = new[] { "workItemId" }
+                }
+            },
+            new()
+            {
+                Name = "get_work_item",
+                Description = "Gets a work item by ID from Azure DevOps",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["workItemId"] = new
+                        {
+                            type = "number",
+                            description = "The ID of the work item to retrieve"
+                        }
+                    },
+                    required = new[] { "workItemId" }
+                }
+            },
+            new()
+            {
+                Name = "list_work_items",
+                Description = "Lists work items from Azure DevOps using WIQL query",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["wiql"] = new
+                        {
+                            type = "string",
+                            description = "Optional: WIQL (Work Item Query Language) query. If not provided, returns all work items in the project"
+                        },
+                        ["maxResults"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Maximum number of work items to return"
+                        }
+                    },
+                    required = new string[] { }
+                }
             }
         };
 
@@ -392,6 +663,18 @@ public class McpServer
                 "update_record" => await HandleUpdateRecordAsync(arguments),
                 "delete_record" => await HandleDeleteRecordAsync(arguments),
                 "query_records" => await HandleQueryRecordsAsync(arguments),
+                // Planning tools
+                "parse_document_to_tasks" => await HandleParseDocumentToTasksAsync(arguments),
+                "infer_schedule_from_document" => await HandleInferScheduleAsync(arguments),
+                "plan_tasks_into_iterations" => await HandlePlanTasksIntoIterationsAsync(arguments),
+                "create_ado_project_from_tasks" => await HandleCreateAdoProjectFromTasksAsync(arguments),
+                "run_document_to_ado_project" => await HandleRunDocumentToAdoProjectAsync(arguments),
+                // DevOps tools
+                "create_work_item" => await HandleCreateWorkItemAsync(arguments),
+                "update_work_item" => await HandleUpdateWorkItemAsync(arguments),
+                "delete_work_item" => await HandleDeleteWorkItemAsync(arguments),
+                "get_work_item" => await HandleGetWorkItemAsync(arguments),
+                "list_work_items" => await HandleListWorkItemsAsync(arguments),
                 _ => throw new Exception($"Unknown tool: {toolName}")
             };
 
@@ -763,6 +1046,388 @@ public class McpServer
         }).ToList();
 
         var text = JsonSerializer.Serialize(records, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    // Planning tool handlers
+    private async Task<ToolResult> HandleParseDocumentToTasksAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("path", out var pathElement))
+        {
+            throw new ArgumentException("path is required");
+        }
+
+        var path = pathElement.GetString() ?? throw new ArgumentException("path cannot be null");
+        
+        string? language = null;
+        if (arguments.TryGetValue("language", out var languageElement))
+        {
+            language = languageElement.GetString();
+        }
+
+        var result = await _documentTaskParser.ParseDocumentAsync(path, language);
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleInferScheduleAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("rawText", out var rawTextElement))
+        {
+            throw new ArgumentException("rawText is required");
+        }
+
+        if (!arguments.TryGetValue("tasks", out var tasksElement))
+        {
+            throw new ArgumentException("tasks is required");
+        }
+
+        var rawText = rawTextElement.GetString() ?? throw new ArgumentException("rawText cannot be null");
+        var tasks = JsonSerializer.Deserialize<List<ParsedTask>>(tasksElement.GetRawText()) 
+            ?? throw new ArgumentException("tasks cannot be null");
+
+        double? capacity = null;
+        if (arguments.TryGetValue("defaultCapacityHoursPerSprint", out var capacityElement))
+        {
+            if (capacityElement.TryGetDouble(out var capacityValue))
+            {
+                capacity = capacityValue;
+            }
+        }
+
+        var schedule = _scheduleInferenceService.InferSchedule(rawText, tasks, capacity);
+        var text = JsonSerializer.Serialize(schedule, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandlePlanTasksIntoIterationsAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("tasks", out var tasksElement))
+        {
+            throw new ArgumentException("tasks is required");
+        }
+
+        if (!arguments.TryGetValue("schedule", out var scheduleElement))
+        {
+            throw new ArgumentException("schedule is required");
+        }
+
+        var tasks = JsonSerializer.Deserialize<List<ParsedTask>>(tasksElement.GetRawText()) 
+            ?? throw new ArgumentException("tasks cannot be null");
+        var schedule = JsonSerializer.Deserialize<ProjectSchedule>(scheduleElement.GetRawText()) 
+            ?? throw new ArgumentException("schedule cannot be null");
+
+        var plan = _taskPlanner.PlanTasksIntoIterations(tasks, schedule);
+        var text = JsonSerializer.Serialize(plan, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleRunDocumentToAdoProjectAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("path", out var pathElement))
+        {
+            throw new ArgumentException("path is required");
+        }
+
+        var path = pathElement.GetString() ?? throw new ArgumentException("path cannot be null");
+
+        _logger.LogInformation($"Starting end-to-end document to ADO project pipeline for: {path}");
+
+        // Step 1: Parse document to tasks
+        _logger.LogInformation("Step 1: Parsing document to extract tasks");
+        var parseResult = await _documentTaskParser.ParseDocumentAsync(path);
+        _logger.LogInformation($"Extracted {parseResult.Tasks.Count} tasks");
+
+        if (parseResult.Tasks.Count == 0)
+        {
+            throw new Exception("No tasks found in document. Ensure the document contains task items with action verbs or bullet points.");
+        }
+
+        // Step 2: Infer schedule
+        _logger.LogInformation("Step 2: Inferring project schedule");
+        var schedule = _scheduleInferenceService.InferSchedule(parseResult.RawText, parseResult.Tasks);
+        _logger.LogInformation($"Schedule inferred: {schedule.SprintCount} sprints, {schedule.SprintLengthDays} days each");
+
+        // Step 3: Plan tasks into iterations
+        _logger.LogInformation("Step 3: Planning tasks into iterations");
+        var plan = _taskPlanner.PlanTasksIntoIterations(parseResult.Tasks, schedule);
+        _logger.LogInformation($"Planned {plan.Summary.Items} tasks into {plan.Iterations.Count} iterations");
+
+        // Step 4: Create project in Azure DevOps
+        _logger.LogInformation("Step 4: Creating project in Azure DevOps");
+        var adoResult = await _devOpsService.CreateProjectFromPlanAsync(plan, schedule, parseResult.Digest);
+        _logger.LogInformation($"Created {adoResult.WorkItemsCreated} work items in {adoResult.IterationsCreated} iterations");
+        
+        // Build comprehensive result
+        var finalResult = new DocumentToAdoResult
+        {
+            ProjectId = adoResult.ProjectId,
+            ProjectName = adoResult.ProjectName,
+            WebUrl = adoResult.WebUrl,
+            Digest = parseResult.Digest,
+            TasksFound = parseResult.Tasks.Count,
+            SprintsCreated = adoResult.IterationsCreated,
+            WorkItemsCreated = adoResult.WorkItemsCreated,
+            TotalEstimatedHours = plan.Summary.Hours,
+            Schedule = schedule
+        };
+
+        var text = JsonSerializer.Serialize(finalResult, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    // DevOps tool handlers
+    private async Task<ToolResult> HandleCreateAdoProjectFromTasksAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("plan", out var planElement))
+        {
+            throw new ArgumentException("plan is required");
+        }
+
+        if (!arguments.TryGetValue("schedule", out var scheduleElement))
+        {
+            throw new ArgumentException("schedule is required");
+        }
+
+        if (!arguments.TryGetValue("digest", out var digestElement))
+        {
+            throw new ArgumentException("digest is required");
+        }
+
+        var plan = JsonSerializer.Deserialize<TaskPlan>(planElement.GetRawText()) 
+            ?? throw new ArgumentException("plan cannot be null");
+        var schedule = JsonSerializer.Deserialize<ProjectSchedule>(scheduleElement.GetRawText()) 
+            ?? throw new ArgumentException("schedule cannot be null");
+        var digest = digestElement.GetString() ?? throw new ArgumentException("digest cannot be null");
+
+        string? teamName = null;
+        if (arguments.TryGetValue("teamName", out var teamNameElement))
+        {
+            teamName = teamNameElement.GetString();
+        }
+
+        var result = await _devOpsService.CreateProjectFromPlanAsync(plan, schedule, digest, teamName);
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleCreateWorkItemAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("title", out var titleElement))
+        {
+            throw new ArgumentException("title is required");
+        }
+
+        var title = titleElement.GetString() ?? throw new ArgumentException("title cannot be null");
+
+        string? description = null;
+        if (arguments.TryGetValue("description", out var descElement))
+        {
+            description = descElement.GetString();
+        }
+
+        var workItemType = "Task";
+        if (arguments.TryGetValue("workItemType", out var typeElement))
+        {
+            workItemType = typeElement.GetString() ?? "Task";
+        }
+
+        var priority = 3;
+        if (arguments.TryGetValue("priority", out var priorityElement))
+        {
+            if (priorityElement.TryGetInt32(out var priorityValue))
+            {
+                priority = priorityValue;
+            }
+        }
+
+        double? estimatedHours = null;
+        if (arguments.TryGetValue("estimatedHours", out var hoursElement))
+        {
+            if (hoursElement.TryGetDouble(out var hoursValue))
+            {
+                estimatedHours = hoursValue;
+            }
+        }
+
+        List<string>? tags = null;
+        if (arguments.TryGetValue("tags", out var tagsElement))
+        {
+            tags = JsonSerializer.Deserialize<List<string>>(tagsElement.GetRawText());
+        }
+
+        var workItemId = await _devOpsService.CreateWorkItemAsync(title, description, workItemType, priority, estimatedHours, tags);
+
+        var result = new
+        {
+            workItemId = workItemId,
+            title = title,
+            message = "Work item created successfully"
+        };
+
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleUpdateWorkItemAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("workItemId", out var idElement))
+        {
+            throw new ArgumentException("workItemId is required");
+        }
+
+        if (!arguments.TryGetValue("fields", out var fieldsElement))
+        {
+            throw new ArgumentException("fields is required");
+        }
+
+        if (!idElement.TryGetInt32(out var workItemId))
+        {
+            throw new ArgumentException("workItemId must be a valid integer");
+        }
+
+        var fields = JsonSerializer.Deserialize<Dictionary<string, object?>>(fieldsElement.GetRawText()) 
+            ?? throw new ArgumentException("fields cannot be null");
+
+        await _devOpsService.UpdateWorkItemAsync(workItemId, fields);
+
+        var result = new
+        {
+            workItemId = workItemId,
+            message = "Work item updated successfully"
+        };
+
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleDeleteWorkItemAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("workItemId", out var idElement))
+        {
+            throw new ArgumentException("workItemId is required");
+        }
+
+        if (!idElement.TryGetInt32(out var workItemId))
+        {
+            throw new ArgumentException("workItemId must be a valid integer");
+        }
+
+        await _devOpsService.DeleteWorkItemAsync(workItemId);
+
+        var result = new
+        {
+            workItemId = workItemId,
+            message = "Work item deleted successfully"
+        };
+
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleGetWorkItemAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("workItemId", out var idElement))
+        {
+            throw new ArgumentException("workItemId is required");
+        }
+
+        if (!idElement.TryGetInt32(out var workItemId))
+        {
+            throw new ArgumentException("workItemId must be a valid integer");
+        }
+
+        var workItem = await _devOpsService.GetWorkItemAsync(workItemId);
+        var text = JsonSerializer.Serialize(workItem, _jsonOptions);
+        
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleListWorkItemsAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        string? wiql = null;
+        if (arguments != null && arguments.TryGetValue("wiql", out var wiqlElement))
+        {
+            wiql = wiqlElement.GetString();
+        }
+
+        int? maxResults = null;
+        if (arguments != null && arguments.TryGetValue("maxResults", out var maxResultsElement))
+        {
+            if (maxResultsElement.TryGetInt32(out var maxResultsValue))
+            {
+                maxResults = maxResultsValue;
+            }
+        }
+
+        var workItems = await _devOpsService.ListWorkItemsAsync(wiql, maxResults);
+        var text = JsonSerializer.Serialize(workItems, _jsonOptions);
+        
         return new ToolResult
         {
             Content = new List<ContentItem>

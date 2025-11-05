@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Dataverse_Devops_MCP.Services;
+using Dataverse_Devops_MCP.Services.Planning;
 using Dataverse_Devops_MCP.Mcp;
 
 namespace Dataverse_Devops_MCP;
@@ -54,6 +55,14 @@ class Program
 
                 // Add Dataverse service
                 services.AddSingleton<IDataverseService, DataverseService>();
+                
+                // Add Azure DevOps service
+                services.AddSingleton<IDevOpsService, DevOpsService>();
+                
+                // Add Planning services
+                services.AddSingleton<DocumentTaskParser>();
+                services.AddSingleton<ScheduleInferenceService>();
+                services.AddSingleton<TaskPlanner>();
                 
                 // Add MCP Server
                 services.AddSingleton<McpServer>();

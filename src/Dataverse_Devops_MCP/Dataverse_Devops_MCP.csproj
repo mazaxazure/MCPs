@@ -40,6 +40,14 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.63.0" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    
+    <!-- Document parsing packages -->
+    <PackageReference Include="PdfPig" Version="0.1.9" />
+    <PackageReference Include="DocX" Version="3.0.1" />
+    <PackageReference Include="Markdig" Version="0.37.0" />
+    
+    <!-- HTTP client for Azure DevOps REST API -->
+    <PackageReference Include="System.Net.Http.Json" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
