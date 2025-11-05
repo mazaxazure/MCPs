@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "dataverse-devops": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "path/to/Dataverse_Devops_MCP.csproj"
+      ],
+      "env": {
+        "DATAVERSE_TENANT_ID": "your-tenant-id",
+        "DATAVERSE_CLIENT_ID": "your-client-id",
+        "DATAVERSE_CLIENT_SECRET": "your-client-secret",
+        "DATAVERSE_INSTANCE_URL": "https://yourorg.crm.dynamics.com",
+        "AZDO_ORGANIZATION": "your-organization",
+        "AZDO_PROJECT": "your-project",
+        "AZDO_PAT": "your-personal-access-token"
+      }
+    }
+  }
+}
