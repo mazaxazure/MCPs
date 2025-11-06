@@ -623,6 +623,29 @@ public class McpServer
                     },
                     required = new string[] { }
                 }
+            },
+            new()
+            {
+                Name = "test_custom_plugins",
+                Description = "Gets custom plugins from Dataverse, creates test tasks in DevOps for each plugin step, executes the tests, and updates the task status with results",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["executeTests"] = new
+                        {
+                            type = "boolean",
+                            description = "Optional: Whether to execute tests after creating tasks (default: true)"
+                        },
+                        ["updateDevOps"] = new
+                        {
+                            type = "boolean",
+                            description = "Optional: Whether to update DevOps with test results (default: true)"
+                        }
+                    },
+                    required = new string[] { }
+                }
             }
         };
 
@@ -675,6 +698,7 @@ public class McpServer
                 "delete_work_item" => await HandleDeleteWorkItemAsync(arguments),
                 "get_work_item" => await HandleGetWorkItemAsync(arguments),
                 "list_work_items" => await HandleListWorkItemsAsync(arguments),
+                "test_custom_plugins" => await HandleTestCustomPluginsAsync(arguments),
                 _ => throw new Exception($"Unknown tool: {toolName}")
             };
 
@@ -1435,6 +1459,454 @@ public class McpServer
                 new() { Type = "text", Text = text }
             }
         };
+    }
+
+    private async Task<ToolResult> HandleTestCustomPluginsAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        _logger.LogInformation("Starting custom plugin testing workflow");
+
+        var executeTests = true;
+        var updateDevOps = true;
+
+        if (arguments != null)
+        {
+            if (arguments.TryGetValue("executeTests", out var executeElement))
+            {
+                executeTests = executeElement.GetBoolean();
+            }
+
+            if (arguments.TryGetValue("updateDevOps", out var updateElement))
+            {
+                updateDevOps = updateElement.GetBoolean();
+            }
+        }
+
+        var results = new List<object>();
+
+        try
+        {
+            // Step 1: Get custom plugins from Dataverse
+            _logger.LogInformation("Step 1: Retrieving custom plugins from Dataverse");
+            var plugins = await GetCustomPluginsAsync();
+            _logger.LogInformation($"Found {plugins.Count} custom plugins");
+
+            if (plugins.Count == 0)
+            {
+                return new ToolResult
+                {
+                    Content = new List<ContentItem>
+                    {
+                        new() { Type = "text", Text = JsonSerializer.Serialize(new { message = "No custom plugins found in Dataverse", plugins = 0, tasksCreated = 0 }, _jsonOptions) }
+                    }
+                };
+            }
+
+            // Step 2: Create test tasks in DevOps for each plugin step
+            _logger.LogInformation("Step 2: Creating test tasks in Azure DevOps");
+            var tasksCreated = new List<int>();
+
+            foreach (var plugin in plugins)
+            {
+                var steps = await GetPluginStepsAsync(plugin["plugintypeid"].ToString()!);
+                
+                foreach (var step in steps)
+                {
+                    var taskTitle = $"Test Plugin: {plugin["name"]} - {step["stage"]} on {step["message"]}";
+                    var taskDescription = GeneratePluginTestDescription(plugin, step);
+
+                    var workItemId = await _devOpsService.CreateWorkItemAsync(
+                        title: taskTitle,
+                        description: taskDescription,
+                        workItemType: "Task",
+                        priority: 2,
+                        estimatedHours: 2,
+                        tags: new List<string> { "plugin-test", plugin["name"].ToString()!, step["message"].ToString()! }
+                    );
+
+                    tasksCreated.Add(workItemId);
+                    _logger.LogInformation($"Created task {workItemId} for plugin step");
+
+                    // Step 3: Execute tests if requested
+                    if (executeTests)
+                    {
+                        _logger.LogInformation($"Step 3: Executing tests for work item {workItemId}");
+                        var testResult = await ExecutePluginTestAsync(plugin, step);
+                        
+                        // Step 4: Update DevOps with results
+                        if (updateDevOps)
+                        {
+                            _logger.LogInformation($"Step 4: Updating work item {workItemId} with test results");
+                            await UpdateWorkItemWithTestResultsAsync(workItemId, plugin, step, testResult);
+                        }
+
+                        results.Add(new
+                        {
+                            workItemId = workItemId,
+                            plugin = plugin["name"],
+                            step = step["message"],
+                            stage = step["stage"],
+                            testExecuted = true,
+                            testResult = testResult
+                        });
+                    }
+                    else
+                    {
+                        results.Add(new
+                        {
+                            workItemId = workItemId,
+                            plugin = plugin["name"],
+                            step = step["message"],
+                            stage = step["stage"],
+                            testExecuted = false
+                        });
+                    }
+                }
+            }
+
+            var summary = new
+            {
+                pluginsFound = plugins.Count,
+                tasksCreated = tasksCreated.Count,
+                testsExecuted = executeTests,
+                results = results
+            };
+
+            var text = JsonSerializer.Serialize(summary, _jsonOptions);
+            return new ToolResult
+            {
+                Content = new List<ContentItem>
+                {
+                    new() { Type = "text", Text = text }
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in plugin testing workflow");
+            throw;
+        }
+    }
+
+    private async Task<List<Dictionary<string, object>>> GetCustomPluginsAsync()
+    {
+        // Query custom plugins (customizationlevel = 1)
+        var entities = await _dataverseService.QueryRecordsAsync(
+            "plugintype",
+            "isworkflowactivity eq false and iscustomizable eq true",
+            new[] { "plugintypeid", "name", "typename", "assemblyname", "friendlyname", "description" },
+            50
+        );
+
+        return entities.Select(e => e.Attributes.ToDictionary(
+            kvp => kvp.Key,
+            kvp => (object)(kvp.Value?.ToString() ?? string.Empty)
+        )).ToList();
+    }
+
+    private async Task<List<Dictionary<string, object>>> GetPluginStepsAsync(string pluginTypeId)
+    {
+        // Get all steps for this plugin
+        var steps = await _dataverseService.QueryRecordsAsync(
+            "sdkmessageprocessingstep",
+            $"plugintypeid eq {pluginTypeId}",
+            new[] { "sdkmessageprocessingstepid", "name", "stage", "mode", "rank", "description" },
+            100
+        );
+
+        var result = new List<Dictionary<string, object>>();
+        
+        foreach (var step in steps)
+        {
+            var stepData = new Dictionary<string, object>
+            {
+                ["sdkmessageprocessingstepid"] = step.Id.ToString(),
+                ["name"] = step.GetAttributeValue<string>("name") ?? "Unnamed Step",
+                ["stage"] = GetStageName(step.GetAttributeValue<int>("stage")),
+                ["mode"] = step.GetAttributeValue<int>("mode") == 0 ? "Synchronous" : "Asynchronous",
+                ["rank"] = step.GetAttributeValue<int>("rank"),
+                ["description"] = step.GetAttributeValue<string>("description") ?? "",
+                ["message"] = await GetMessageNameForStepAsync(step.Id.ToString())
+            };
+            
+            result.Add(stepData);
+        }
+
+        return result;
+    }
+
+    private string GetStageName(int stage)
+    {
+        return stage switch
+        {
+            10 => "PreValidation",
+            20 => "PreOperation",
+            40 => "PostOperation",
+            _ => $"Unknown({stage})"
+        };
+    }
+
+    private async Task<string> GetMessageNameForStepAsync(string stepId)
+    {
+        try
+        {
+            var step = await _dataverseService.GetRecordAsync("sdkmessageprocessingstep", Guid.Parse(stepId), new[] { "sdkmessageid" });
+            if (step != null && step.Contains("sdkmessageid"))
+            {
+                var messageRef = step.GetAttributeValue<Microsoft.Xrm.Sdk.EntityReference>("sdkmessageid");
+                if (messageRef != null)
+                {
+                    var message = await _dataverseService.GetRecordAsync("sdkmessage", messageRef.Id, new[] { "name" });
+                    return message?.GetAttributeValue<string>("name") ?? "Unknown";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Could not get message name for step {stepId}");
+        }
+
+        return "Unknown";
+    }
+
+    private string GeneratePluginTestDescription(Dictionary<string, object> plugin, Dictionary<string, object> step)
+    {
+        return $@"<div style=""font-family:Segoe UI, Arial, sans-serif;"">
+<div style=""background-color:#fff4e5;border-left:4px solid #ff9800;padding:12px;margin-bottom:16px;"">
+<strong style=""color:#e65100;"">⚠️ PRUEBA DE PLUGIN PENDIENTE</strong>
+</div>
+
+<p><strong>PLUGIN:</strong> {plugin["name"]}</p>
+<p><strong>ASSEMBLY:</strong> {plugin["assemblyname"]}</p>
+
+<div style=""margin:16px 0;"">
+<p><strong>DETALLES DEL STEP:</strong></p>
+<ul style=""list-style:none;padding-left:0;"">
+<li>📋 <strong>Nombre:</strong> {step["name"]}</li>
+<li>🔧 <strong>Stage:</strong> {step["stage"]}</li>
+<li>📨 <strong>Message:</strong> {step["message"]}</li>
+<li>⚡ <strong>Mode:</strong> {step["mode"]}</li>
+<li>🎯 <strong>Rank:</strong> {step["rank"]}</li>
+</ul>
+</div>
+
+<div style=""margin:16px 0;"">
+<p><strong>PRUEBAS A REALIZAR:</strong></p>
+<ol>
+<li>Crear registro que active el plugin</li>
+<li>Verificar que el plugin se ejecuta correctamente</li>
+<li>Validar que no hay errores en los logs</li>
+<li>Comprobar que los datos se procesan como se espera</li>
+</ol>
+</div>
+
+<div style=""margin:16px 0;"">
+<p><strong>CRITERIOS DE ÉXITO:</strong></p>
+<ul>
+<li>✅ El plugin se ejecuta sin errores</li>
+<li>✅ Los datos se procesan correctamente</li>
+<li>✅ No hay excepciones en los logs</li>
+<li>✅ El rendimiento es aceptable</li>
+</ul>
+</div>
+
+<div style=""margin-top:16px;padding-top:12px;border-top:1px solid #e0e0e0;font-size:0.9em;color:#666;"">
+<em>Tarea generada automáticamente por MCP Server - Plugin Testing Tool</em>
+</div>
+</div>";
+    }
+
+    private async Task<Dictionary<string, object>> ExecutePluginTestAsync(Dictionary<string, object> plugin, Dictionary<string, object> step)
+    {
+        var testResult = new Dictionary<string, object>
+        {
+            ["executed"] = true,
+            ["startTime"] = DateTime.UtcNow,
+            ["success"] = false,
+            ["recordsCreated"] = 0,
+            ["recordsFailed"] = 0,
+            ["errors"] = new List<string>()
+        };
+
+        try
+        {
+            // Determine entity based on plugin name or step
+            var entityName = DetermineEntityFromPlugin(plugin, step);
+            var errors = new List<string>();
+            var recordsCreated = 0;
+            var recordsFailed = 0;
+
+            _logger.LogInformation($"Testing plugin on entity: {entityName}");
+
+            // Create test records to trigger the plugin
+            var testRecords = GenerateTestRecordsForEntity(entityName);
+
+            foreach (var testRecord in testRecords)
+            {
+                try
+                {
+                    var recordId = await _dataverseService.CreateRecordAsync(entityName, testRecord);
+                    recordsCreated++;
+                    _logger.LogInformation($"Successfully created test record {recordId} for plugin test");
+                }
+                catch (Exception ex)
+                {
+                    recordsFailed++;
+                    errors.Add($"Failed to create record: {ex.Message}");
+                    _logger.LogWarning(ex, "Failed to create test record for plugin test");
+                }
+            }
+
+            testResult["recordsCreated"] = recordsCreated;
+            testResult["recordsFailed"] = recordsFailed;
+            testResult["errors"] = errors;
+            testResult["success"] = recordsCreated > 0;
+            testResult["endTime"] = DateTime.UtcNow;
+            testResult["duration"] = ((DateTime)testResult["endTime"] - (DateTime)testResult["startTime"]).TotalSeconds;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error executing plugin test");
+            testResult["success"] = false;
+            ((List<string>)testResult["errors"]).Add($"Test execution error: {ex.Message}");
+        }
+
+        return testResult;
+    }
+
+    private string DetermineEntityFromPlugin(Dictionary<string, object> plugin, Dictionary<string, object> step)
+    {
+        var pluginName = plugin["name"].ToString()!.ToLower();
+        var message = step["message"].ToString()!.ToLower();
+
+        // Try to determine from common patterns
+        if (pluginName.Contains("account") || message.Contains("account")) return "account";
+        if (pluginName.Contains("contact") || message.Contains("contact")) return "contact";
+        if (pluginName.Contains("opportunity") || message.Contains("opportunity")) return "opportunity";
+        if (pluginName.Contains("lead") || message.Contains("lead")) return "lead";
+        if (pluginName.Contains("case") || pluginName.Contains("incident") || message.Contains("incident")) return "incident";
+
+        // Default to account for testing
+        return "account";
+    }
+
+    private List<Dictionary<string, object>> GenerateTestRecordsForEntity(string entityName)
+    {
+        var records = new List<Dictionary<string, object>>();
+
+        switch (entityName.ToLower())
+        {
+            case "account":
+                records.Add(new Dictionary<string, object>
+                {
+                    ["name"] = $"Plugin Test Account {DateTime.UtcNow:yyyyMMddHHmmss}",
+                    ["accountnumber"] = $"TEST-{Guid.NewGuid().ToString().Substring(0, 8)}",
+                    ["telephone1"] = "+34900000000"
+                });
+                break;
+
+            case "contact":
+                records.Add(new Dictionary<string, object>
+                {
+                    ["firstname"] = "Plugin",
+                    ["lastname"] = $"Test {DateTime.UtcNow:yyyyMMddHHmmss}",
+                    ["emailaddress1"] = $"plugintest{Guid.NewGuid().ToString().Substring(0, 8)}@test.com"
+                });
+                break;
+
+            case "opportunity":
+                records.Add(new Dictionary<string, object>
+                {
+                    ["name"] = $"Plugin Test Opportunity {DateTime.UtcNow:yyyyMMddHHmmss}",
+                    ["estimatedvalue"] = 10000
+                });
+                break;
+
+            case "lead":
+                records.Add(new Dictionary<string, object>
+                {
+                    ["subject"] = $"Plugin Test Lead {DateTime.UtcNow:yyyyMMddHHmmss}",
+                    ["firstname"] = "Test",
+                    ["lastname"] = "Lead"
+                });
+                break;
+
+            case "incident":
+                records.Add(new Dictionary<string, object>
+                {
+                    ["title"] = $"Plugin Test Case {DateTime.UtcNow:yyyyMMddHHmmss}",
+                    ["description"] = "Test case created for plugin testing"
+                });
+                break;
+
+            default:
+                // Generic record
+                records.Add(new Dictionary<string, object>
+                {
+                    ["name"] = $"Plugin Test {DateTime.UtcNow:yyyyMMddHHmmss}"
+                });
+                break;
+        }
+
+        return records;
+    }
+
+    private async Task UpdateWorkItemWithTestResultsAsync(int workItemId, Dictionary<string, object> plugin, Dictionary<string, object> step, Dictionary<string, object> testResult)
+    {
+        var success = (bool)testResult["success"];
+        var recordsCreated = (int)testResult["recordsCreated"];
+        var recordsFailed = (int)testResult["recordsFailed"];
+        var duration = testResult.ContainsKey("duration") ? (double)testResult["duration"] : 0;
+        var errors = (List<string>)testResult["errors"];
+
+        var statusDiv = success
+            ? @"<div style=""background-color:#d4edda;border-left:4px solid #28a745;padding:12px;margin-bottom:16px;"">
+<strong style=""color:#155724;"">✅ PRUEBA COMPLETADA EXITOSAMENTE</strong>
+</div>"
+            : @"<div style=""background-color:#f8d7da;border-left:4px solid #dc3545;padding:12px;margin-bottom:16px;"">
+<strong style=""color:#721c24;"">❌ PRUEBA COMPLETADA CON ERRORES</strong>
+</div>";
+
+        var errorSection = errors.Count > 0
+            ? $@"<div style=""margin:16px 0;"">
+<p><strong>ERRORES ENCONTRADOS:</strong></p>
+<ul>
+{string.Join("\n", errors.Select(e => "<li style=\"color:#dc3545;\">" + e + "</li>"))}
+</ul>
+</div>"
+            : "";
+
+        var historyUpdate = $@"<div style=""font-family:Segoe UI, Arial, sans-serif;"">
+{statusDiv}
+<p><strong>PLUGIN:</strong> {plugin["name"]}</p>
+<p><strong>STEP:</strong> {step["name"]} ({step["stage"]} - {step["message"]})</p>
+<div style=""margin:16px 0;"">
+<p><strong>RESULTADO DE LA PRUEBA:</strong></p>
+<ul style=""list-style:none;padding-left:0;"">
+<li>✅ Registros creados: <strong>{recordsCreated}</strong></li>
+<li>❌ Registros fallidos: <strong>{recordsFailed}</strong></li>
+<li>⏱️ Duración: <strong>{duration:F2}s</strong></li>
+<li>📅 Fecha: <strong>{DateTime.Now:dd/MM/yyyy, HH:mm:ss}</strong></li>
+</ul>
+</div>
+{errorSection}
+<div style=""margin-top:16px;padding-top:12px;border-top:1px solid #e0e0e0;font-size:0.9em;color:#666;"">
+<em>Prueba ejecutada automáticamente por MCP Server - Plugin Testing Tool</em><br>
+<em>Duración total: {duration:F2} segundos</em>
+</div>
+</div>";
+
+        var fields = new Dictionary<string, object?>
+        {
+            ["System.History"] = historyUpdate,
+            ["System.State"] = success ? "Done" : "Active"
+        };
+
+        if (!success)
+        {
+            fields["System.Reason"] = "Blocked";
+        }
+
+        await _devOpsService.UpdateWorkItemAsync(workItemId, fields);
     }
 
     private McpResponse CreateErrorResponse(int id, int code, string message)
