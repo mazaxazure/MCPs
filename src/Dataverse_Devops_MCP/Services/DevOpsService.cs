@@ -77,9 +77,10 @@ public class DevOpsService : IDevOpsService
 
     private async Task<string> CreateIterationAsync(IterationDef iteration)
     {
-        var url = $"{_projectName}/_apis/work/teamsettings/iterations?api-version=7.1";
+        // First, create the iteration at project level
+        var createUrl = $"{_organizationUrl}/{_projectName}/_apis/wit/classificationnodes/iterations?api-version=7.1";
         
-        var payload = new
+        var createPayload = new
         {
             name = iteration.Name,
             attributes = new
@@ -89,18 +90,36 @@ public class DevOpsService : IDevOpsService
             }
         };
 
-        var content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json");
-        var response = await _httpClient.PostAsync(url, content);
+        var createContent = new StringContent(JsonSerializer.Serialize(createPayload, _jsonOptions), Encoding.UTF8, "application/json");
+        var createResponse = await _httpClient.PostAsync(createUrl, createContent);
+
+        if (!createResponse.IsSuccessStatusCode)
+        {
+            var errorContent = await createResponse.Content.ReadAsStringAsync();
+            throw new Exception($"Failed to create iteration {iteration.Name}: {createResponse.StatusCode} - {errorContent}");
+        }
+
+        var createResult = await createResponse.Content.ReadAsStringAsync();
+        var createDoc = JsonDocument.Parse(createResult);
+        var iterationId = createDoc.RootElement.GetProperty("identifier").GetString();
+        var path = createDoc.RootElement.GetProperty("path").GetString() ?? iteration.Name;
+
+        // Now associate the iteration with the team
+        var teamUrl = $"{_organizationUrl}/{_projectName}/{_projectName} Team/_apis/work/teamsettings/iterations?api-version=7.1";
+        
+        var teamPayload = new
+        {
+            id = iterationId
+        };
+
+        var content = new StringContent(JsonSerializer.Serialize(teamPayload, _jsonOptions), Encoding.UTF8, "application/json");
+        var response = await _httpClient.PostAsync(teamUrl, content);
 
         if (!response.IsSuccessStatusCode)
         {
             var errorContent = await response.Content.ReadAsStringAsync();
-            throw new Exception($"Failed to create iteration {iteration.Name}: {response.StatusCode} - {errorContent}");
+            throw new Exception($"Failed to associate iteration {iteration.Name} with team: {response.StatusCode} - {errorContent}");
         }
-
-        var result = await response.Content.ReadAsStringAsync();
-        var jsonDoc = JsonDocument.Parse(result);
-        var path = jsonDoc.RootElement.GetProperty("path").GetString() ?? iteration.Name;
         
         return path;
     }
