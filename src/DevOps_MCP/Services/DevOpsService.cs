@@ -105,7 +105,7 @@ public class DevOpsService : IDevOpsService
         var path = createDoc.RootElement.GetProperty("path").GetString() ?? iteration.Name;
 
         // Now associate the iteration with the team
-        var teamUrl = $"{_organizationUrl}/{_projectName}/{_projectName} Team/_apis/work/teamsettings/iterations?api-version=7.1";
+        var teamUrl = $"{_organizationUrl}/{_projectName}/_apis/work/teamsettings/iterations?api-version=7.1";
         
         var teamPayload = new
         {
@@ -178,7 +178,7 @@ public class DevOpsService : IDevOpsService
 
     public async Task UpdateWorkItemAsync(int workItemId, Dictionary<string, object?> fields)
     {
-        var url = $"{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
+        var url = $"{_organizationUrl}/{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
 
         var operations = fields.Select(kvp => new
         {
@@ -201,7 +201,7 @@ public class DevOpsService : IDevOpsService
 
     public async Task DeleteWorkItemAsync(int workItemId)
     {
-        var url = $"{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
+        var url = $"{_organizationUrl}/{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
 
         var response = await _httpClient.DeleteAsync(url);
 
@@ -216,7 +216,7 @@ public class DevOpsService : IDevOpsService
 
     public async Task<Dictionary<string, object?>> GetWorkItemAsync(int workItemId)
     {
-        var url = $"{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
+        var url = $"{_organizationUrl}/{_projectName}/_apis/wit/workitems/{workItemId}?api-version=7.1";
 
         var response = await _httpClient.GetAsync(url);
 
@@ -251,7 +251,7 @@ public class DevOpsService : IDevOpsService
         // Default WIQL query if none provided
         var query = wiql ?? $"SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo] FROM WorkItems WHERE [System.TeamProject] = '{_projectName}' ORDER BY [System.ChangedDate] DESC";
 
-        var url = $"{_projectName}/_apis/wit/wiql?api-version=7.1";
+        var url = $"{_organizationUrl}/{_projectName}/_apis/wit/wiql?api-version=7.1";
         
         var payload = new { query };
         var content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json");
@@ -387,7 +387,7 @@ public class DevOpsService : IDevOpsService
 
     private async Task CreateWorkItemLinkAsync(int sourceWorkItemId, int targetWorkItemId, string linkType)
     {
-        var url = $"{_projectName}/_apis/wit/workitems/{sourceWorkItemId}?api-version=7.1";
+        var url = $"{_organizationUrl}/{_projectName}/_apis/wit/workitems/{sourceWorkItemId}?api-version=7.1";
 
         var operations = new List<object>
         {
