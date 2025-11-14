@@ -5,6 +5,7 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
+using System.Linq;
 
 namespace Dataverse_MCP.Services;
 
@@ -125,6 +126,12 @@ public class DataverseService : IDataverseService
         return entityMetadata?.OneToManyRelationships ?? Array.Empty<OneToManyRelationshipMetadata>();
     }
 
+    public async Task<AttributeMetadata?> GetAttributeMetadataAsync(string entityLogicalName, string attributeLogicalName)
+    {
+        var entityMetadata = await GetEntityMetadataAsync(entityLogicalName);
+        return entityMetadata?.Attributes?.FirstOrDefault(a => a.LogicalName == attributeLogicalName);
+    }
+
     private void EnsureConnected()
     {
         if (_serviceClient == null || !_serviceClient.IsReady)
@@ -143,7 +150,7 @@ public class DataverseService : IDataverseService
             var entity = new Entity(entityLogicalName);
             foreach (var attr in attributes)
             {
-                entity[attr.Key] = ConvertAttributeValue(attr.Value);
+                entity[attr.Key] = await ConvertAttributeValueAsync(entityLogicalName, attr.Key, attr.Value);
             }
 
             var id = await Task.Run(() => _serviceClient!.Create(entity));
@@ -196,7 +203,7 @@ public class DataverseService : IDataverseService
 
             foreach (var attr in attributes)
             {
-                entity[attr.Key] = ConvertAttributeValue(attr.Value);
+                entity[attr.Key] = await ConvertAttributeValueAsync(entityLogicalName, attr.Key, attr.Value);
             }
 
             await Task.Run(() => _serviceClient!.Update(entity));
@@ -281,12 +288,15 @@ public class DataverseService : IDataverseService
         }
     }
 
-    private object? ConvertAttributeValue(object value)
+    private async Task<object?> ConvertAttributeValueAsync(string entityLogicalName, string attributeName, object? value)
     {
-        // Handle basic conversions
+        if (value == null)
+            return null;
+
+        // Handle basic conversions for JsonElement first
         if (value is System.Text.Json.JsonElement jsonElement)
         {
-            return jsonElement.ValueKind switch
+            object? convertedValue = jsonElement.ValueKind switch
             {
                 System.Text.Json.JsonValueKind.String => jsonElement.GetString() ?? string.Empty,
                 System.Text.Json.JsonValueKind.Number => jsonElement.TryGetInt32(out var intVal) ? intVal : jsonElement.GetDouble(),
@@ -295,9 +305,191 @@ public class DataverseService : IDataverseService
                 System.Text.Json.JsonValueKind.Null => null,
                 _ => value
             };
+            value = convertedValue;
         }
 
-        return value;
+        if (value == null)
+            return null;
+
+        // Get attribute metadata to determine the correct type conversion
+        var attributeMetadata = await GetAttributeMetadataAsync(entityLogicalName, attributeName);
+        if (attributeMetadata == null)
+            return value; // If we can't get metadata, return as-is
+
+        // Handle specific attribute types that require special conversion
+        return attributeMetadata.AttributeType switch
+        {
+            AttributeTypeCode.Lookup => ConvertToEntityReference(value, attributeMetadata),
+            AttributeTypeCode.Customer => ConvertToEntityReference(value, attributeMetadata),
+            AttributeTypeCode.Owner => ConvertToEntityReference(value, attributeMetadata),
+            AttributeTypeCode.DateTime => ConvertToDateTime(value),
+            AttributeTypeCode.Money => ConvertToMoney(value),
+            AttributeTypeCode.Picklist => ConvertToOptionSetValue(value),
+            AttributeTypeCode.State => ConvertToOptionSetValue(value),
+            AttributeTypeCode.Status => ConvertToOptionSetValue(value),
+            AttributeTypeCode.Boolean => ConvertToBoolean(value),
+            AttributeTypeCode.Integer => ConvertToInteger(value),
+            AttributeTypeCode.BigInt => ConvertToLong(value),
+            AttributeTypeCode.Double => ConvertToDouble(value),
+            AttributeTypeCode.Decimal => ConvertToDecimal(value),
+            AttributeTypeCode.Uniqueidentifier => ConvertToGuid(value),
+            _ => value // For other types (String, Memo, etc.), return as-is
+        };
+    }
+
+    private EntityReference ConvertToEntityReference(object value, AttributeMetadata attributeMetadata)
+    {
+        if (value is string guidString && Guid.TryParse(guidString, out var guid))
+        {
+            // For lookup fields, we need to determine the target entity type
+            var targetEntity = GetTargetEntityFromLookupMetadata(attributeMetadata);
+            return new EntityReference(targetEntity, guid);
+        }
+        
+        if (value is Guid guidValue)
+        {
+            var targetEntity = GetTargetEntityFromLookupMetadata(attributeMetadata);
+            return new EntityReference(targetEntity, guidValue);
+        }
+
+        throw new ArgumentException($"Cannot convert value '{value}' to EntityReference for attribute '{attributeMetadata.LogicalName}'");
+    }
+
+    private string GetTargetEntityFromLookupMetadata(AttributeMetadata attributeMetadata)
+    {
+        // Try to get target entity from lookup metadata
+        if (attributeMetadata is LookupAttributeMetadata lookupMetadata && lookupMetadata.Targets?.Length > 0)
+        {
+            return lookupMetadata.Targets[0]; // Take the first target entity
+        }
+
+        // Fallback mapping for common lookup fields
+        return attributeMetadata.LogicalName switch
+        {
+            "msdyn_customer" => "account", // Could also be "contact", but "account" is most common
+            "ownerid" => "systemuser",
+            "createdby" => "systemuser",
+            "modifiedby" => "systemuser",
+            "transactioncurrencyid" => "transactioncurrency",
+            _ => "account" // Default fallback
+        };
+    }
+
+    private DateTime? ConvertToDateTime(object value)
+    {
+        if (value is DateTime dateTime)
+            return dateTime;
+            
+        if (value is string dateString)
+        {
+            if (DateTime.TryParse(dateString, out var parsedDate))
+                return parsedDate;
+                
+            if (DateTimeOffset.TryParse(dateString, out var parsedDateOffset))
+                return parsedDateOffset.DateTime;
+        }
+        
+        return null;
+    }
+
+    private Money? ConvertToMoney(object value)
+    {
+        if (value is decimal decimalValue)
+            return new Money(decimalValue);
+            
+        if (value is double doubleValue)
+            return new Money((decimal)doubleValue);
+            
+        if (value is string stringValue && decimal.TryParse(stringValue, out var parsedDecimal))
+            return new Money(parsedDecimal);
+            
+        return null;
+    }
+
+    private OptionSetValue? ConvertToOptionSetValue(object value)
+    {
+        if (value is int intValue)
+            return new OptionSetValue(intValue);
+            
+        if (value is string stringValue && int.TryParse(stringValue, out var parsedInt))
+            return new OptionSetValue(parsedInt);
+            
+        return null;
+    }
+
+    private bool? ConvertToBoolean(object value)
+    {
+        if (value is bool boolValue)
+            return boolValue;
+            
+        if (value is string stringValue && bool.TryParse(stringValue, out var parsedBool))
+            return parsedBool;
+            
+        return null;
+    }
+
+    private int? ConvertToInteger(object value)
+    {
+        if (value is int intValue)
+            return intValue;
+            
+        if (value is string stringValue && int.TryParse(stringValue, out var parsedInt))
+            return parsedInt;
+            
+        return null;
+    }
+
+    private long? ConvertToLong(object value)
+    {
+        if (value is long longValue)
+            return longValue;
+            
+        if (value is int intValue)
+            return intValue;
+            
+        if (value is string stringValue && long.TryParse(stringValue, out var parsedLong))
+            return parsedLong;
+            
+        return null;
+    }
+
+    private double? ConvertToDouble(object value)
+    {
+        if (value is double doubleValue)
+            return doubleValue;
+            
+        if (value is decimal decimalValue)
+            return (double)decimalValue;
+            
+        if (value is string stringValue && double.TryParse(stringValue, out var parsedDouble))
+            return parsedDouble;
+            
+        return null;
+    }
+
+    private decimal? ConvertToDecimal(object value)
+    {
+        if (value is decimal decimalValue)
+            return decimalValue;
+            
+        if (value is double doubleValue)
+            return (decimal)doubleValue;
+            
+        if (value is string stringValue && decimal.TryParse(stringValue, out var parsedDecimal))
+            return parsedDecimal;
+            
+        return null;
+    }
+
+    private Guid? ConvertToGuid(object value)
+    {
+        if (value is Guid guidValue)
+            return guidValue;
+            
+        if (value is string stringValue && Guid.TryParse(stringValue, out var parsedGuid))
+            return parsedGuid;
+            
+        return null;
     }
 
     /// <summary>
@@ -335,13 +527,8 @@ public class DataverseService : IDataverseService
             // OptionSetValue - return the integer value
             OptionSetValue optionSet => optionSet.Value,
             
-            // EntityReference - return a dictionary with id, name, and logical name
-            EntityReference entityRef => new Dictionary<string, object?>
-            {
-                ["id"] = entityRef.Id.ToString(),
-                ["name"] = entityRef.Name,
-                ["logicalName"] = entityRef.LogicalName
-            },
+            // EntityReference - return a more readable format
+            EntityReference entityRef => $"{entityRef.Id}|{entityRef.LogicalName}" + (string.IsNullOrEmpty(entityRef.Name) ? "" : $"|{entityRef.Name}"),
             
             // Boolean
             bool boolValue => boolValue,
