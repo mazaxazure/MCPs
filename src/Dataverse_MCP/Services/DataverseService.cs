@@ -555,4 +555,146 @@ public class DataverseService : IDataverseService
             _ => value
         };
     }
+
+    // WebResource Operations
+    public async Task<IEnumerable<Entity>> ListWebResourcesAsync(int? webResourceType = null, string? nameFilter = null, int? maxResults = null)
+    {
+        EnsureConnected();
+
+        try
+        {
+            var query = new QueryExpression("webresource")
+            {
+                ColumnSet = new ColumnSet("webresourceid", "name", "displayname", "webresourcetype", "modifiedon", "description")
+            };
+
+            // Filter by webresource type if specified
+            // Types: 1=HTML, 2=CSS, 3=JavaScript, 4=XML, 5=PNG, 6=JPG, 7=GIF, 8=XAP, 9=XSL, 10=ICO, 11=SVG, 12=RESX
+            if (webResourceType.HasValue)
+            {
+                query.Criteria.AddCondition("webresourcetype", ConditionOperator.Equal, webResourceType.Value);
+            }
+
+            // Filter by name pattern if specified
+            if (!string.IsNullOrEmpty(nameFilter))
+            {
+                query.Criteria.AddCondition("name", ConditionOperator.Like, $"%{nameFilter}%");
+            }
+
+            if (maxResults.HasValue)
+            {
+                query.TopCount = maxResults.Value;
+            }
+
+            // Order by name
+            query.AddOrder("name", OrderType.Ascending);
+
+            var results = await Task.Run(() => _serviceClient!.RetrieveMultiple(query));
+            
+            // Convert complex types to primitive values
+            foreach (var entity in results.Entities)
+            {
+                ConvertEntityAttributesToPrimitives(entity);
+            }
+            
+            _logger.LogInformation($"Retrieved {results.Entities.Count} webresources");
+            return results.Entities;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving webresources");
+            throw;
+        }
+    }
+
+    public async Task<string?> GetWebResourceContentAsync(Guid webResourceId)
+    {
+        EnsureConnected();
+
+        try
+        {
+            var entity = await Task.Run(() => _serviceClient!.Retrieve("webresource", webResourceId, new ColumnSet("content", "name", "webresourcetype")));
+            
+            if (entity == null)
+            {
+                _logger.LogWarning($"WebResource with ID {webResourceId} not found");
+                return null;
+            }
+
+            if (!entity.Contains("content") || entity["content"] == null)
+            {
+                _logger.LogWarning($"WebResource {webResourceId} has no content");
+                return null;
+            }
+
+            var base64Content = entity["content"].ToString();
+            if (string.IsNullOrEmpty(base64Content))
+            {
+                return string.Empty;
+            }
+
+            // Decode Base64 content
+            var bytes = Convert.FromBase64String(base64Content);
+            var decodedContent = System.Text.Encoding.UTF8.GetString(bytes);
+            
+            _logger.LogInformation($"Retrieved content for webresource {webResourceId} ({entity.GetAttributeValue<string>("name")})");
+            return decodedContent;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error retrieving webresource content for ID {webResourceId}");
+            throw;
+        }
+    }
+
+    public async Task<string?> GetWebResourceContentByNameAsync(string name)
+    {
+        EnsureConnected();
+
+        try
+        {
+            var query = new QueryExpression("webresource")
+            {
+                ColumnSet = new ColumnSet("webresourceid", "content", "name", "webresourcetype"),
+                Criteria = new FilterExpression()
+            };
+            query.Criteria.AddCondition("name", ConditionOperator.Equal, name);
+            query.TopCount = 1;
+
+            var results = await Task.Run(() => _serviceClient!.RetrieveMultiple(query));
+            
+            if (results.Entities.Count == 0)
+            {
+                _logger.LogWarning($"WebResource with name '{name}' not found");
+                return null;
+            }
+
+            var entity = results.Entities[0];
+            var webResourceId = entity.Id;
+            
+            if (!entity.Contains("content") || entity["content"] == null)
+            {
+                _logger.LogWarning($"WebResource '{name}' has no content");
+                return null;
+            }
+
+            var base64Content = entity["content"].ToString();
+            if (string.IsNullOrEmpty(base64Content))
+            {
+                return string.Empty;
+            }
+
+            // Decode Base64 content
+            var bytes = Convert.FromBase64String(base64Content);
+            var decodedContent = System.Text.Encoding.UTF8.GetString(bytes);
+            
+            _logger.LogInformation($"Retrieved content for webresource '{name}' (ID: {webResourceId})");
+            return decodedContent;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error retrieving webresource content for name '{name}'");
+            throw;
+        }
+    }
 }

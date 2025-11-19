@@ -350,6 +350,57 @@ public class McpServer
                     },
                     required = new[] { "entityLogicalName" }
                 }
+            },
+            new()
+            {
+                Name = "list_webresources",
+                Description = "Lists web resources deployed in the Dataverse environment. Can filter by type (3=JavaScript, 1=HTML, 2=CSS) and name pattern",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["webResourceType"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Filter by resource type. 1=HTML, 2=CSS, 3=JavaScript, 4=XML, 5=PNG, 6=JPG, 7=GIF, 8=XAP, 9=XSL, 10=ICO, 11=SVG, 12=RESX"
+                        },
+                        ["nameFilter"] = new
+                        {
+                            type = "string",
+                            description = "Optional: Filter by name pattern (partial match supported)"
+                        },
+                        ["maxResults"] = new
+                        {
+                            type = "number",
+                            description = "Optional: Maximum number of records to return"
+                        }
+                    },
+                    required = new string[] { }
+                }
+            },
+            new()
+            {
+                Name = "get_webresource_content",
+                Description = "Gets the decoded content of a web resource. Can search by ID or by name",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["webResourceId"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The GUID of the web resource"
+                        },
+                        ["name"] = new
+                        {
+                            type = "string",
+                            description = "Optional: The name of the web resource (e.g., 'new_/scripts/myfile.js')"
+                        }
+                    },
+                    required = new string[] { }
+                }
             }
         };
 
@@ -390,6 +441,8 @@ public class McpServer
                 "update_record" => await HandleUpdateRecordAsync(arguments),
                 "delete_record" => await HandleDeleteRecordAsync(arguments),
                 "query_records" => await HandleQueryRecordsAsync(arguments),
+                "list_webresources" => await HandleListWebResourcesAsync(arguments),
+                "get_webresource_content" => await HandleGetWebResourceContentAsync(arguments),
                 _ => throw new Exception($"Unknown tool: {toolName}")
             };
 
@@ -761,6 +814,113 @@ public class McpServer
         }).ToList();
 
         var text = JsonSerializer.Serialize(records, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleListWebResourcesAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        int? webResourceType = null;
+        if (arguments?.TryGetValue("webResourceType", out var typeElement) == true)
+        {
+            if (typeElement.TryGetInt32(out var typeInt))
+            {
+                webResourceType = typeInt;
+            }
+        }
+
+        string? nameFilter = null;
+        if (arguments?.TryGetValue("nameFilter", out var nameFilterElement) == true)
+        {
+            nameFilter = nameFilterElement.GetString();
+        }
+
+        int? maxResults = null;
+        if (arguments?.TryGetValue("maxResults", out var maxResultsElement) == true)
+        {
+            if (maxResultsElement.TryGetInt32(out var maxResultsInt))
+            {
+                maxResults = maxResultsInt;
+            }
+        }
+
+        var entities = await _dataverseService.ListWebResourcesAsync(webResourceType, nameFilter, maxResults);
+
+        var webResources = entities.Select(entity =>
+        {
+            var resourceData = new Dictionary<string, object?>
+            {
+                ["webresourceid"] = entity.Id.ToString(),
+                ["name"] = entity.GetAttributeValue<string>("name"),
+                ["displayname"] = entity.GetAttributeValue<string>("displayname"),
+                ["webresourcetype"] = entity.GetAttributeValue<int>("webresourcetype"),
+                ["modifiedon"] = entity.GetAttributeValue<DateTime?>("modifiedon")?.ToString("yyyy-MM-dd HH:mm:ss"),
+                ["description"] = entity.GetAttributeValue<string>("description")
+            };
+
+            return resourceData;
+        }).ToList();
+
+        var text = JsonSerializer.Serialize(webResources, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleGetWebResourceContentAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        string? content = null;
+        string? resourceIdentifier = null;
+
+        // Try to get by ID first
+        if (arguments?.TryGetValue("webResourceId", out var idElement) == true)
+        {
+            var idString = idElement.GetString();
+            if (!string.IsNullOrEmpty(idString) && Guid.TryParse(idString, out var webResourceId))
+            {
+                resourceIdentifier = idString;
+                content = await _dataverseService.GetWebResourceContentAsync(webResourceId);
+            }
+        }
+
+        // If not found by ID, try by name
+        if (content == null && arguments?.TryGetValue("name", out var nameElement) == true)
+        {
+            var name = nameElement.GetString();
+            if (!string.IsNullOrEmpty(name))
+            {
+                resourceIdentifier = name;
+                content = await _dataverseService.GetWebResourceContentByNameAsync(name);
+            }
+        }
+
+        if (content == null)
+        {
+            if (string.IsNullOrEmpty(resourceIdentifier))
+            {
+                throw new ArgumentException("Either webResourceId or name must be provided");
+            }
+            
+            throw new Exception($"WebResource not found or has no content: {resourceIdentifier}");
+        }
+
+        var result = new
+        {
+            identifier = resourceIdentifier,
+            content = content,
+            contentLength = content.Length
+        };
+
+        var text = JsonSerializer.Serialize(result, _jsonOptions);
         return new ToolResult
         {
             Content = new List<ContentItem>

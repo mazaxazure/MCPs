@@ -18,4 +18,9 @@ public interface IDataverseService
     Task UpdateRecordAsync(string entityLogicalName, Guid id, Dictionary<string, object> attributes);
     Task DeleteRecordAsync(string entityLogicalName, Guid id);
     Task<IEnumerable<Entity>> QueryRecordsAsync(string entityLogicalName, string? filter = null, string[]? columns = null, int? maxResults = null);
+    
+    // WebResource Operations
+    Task<IEnumerable<Entity>> ListWebResourcesAsync(int? webResourceType = null, string? nameFilter = null, int? maxResults = null);
+    Task<string?> GetWebResourceContentAsync(Guid webResourceId);
+    Task<string?> GetWebResourceContentByNameAsync(string name);
 }
