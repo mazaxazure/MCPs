@@ -216,6 +216,29 @@ public class McpServer
             },
             new()
             {
+                Name = "get_detailed_relationship_metadata",
+                Description = "Gets detailed metadata for a specific relationship, including cascade behaviors",
+                InputSchema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["entityLogicalName"] = new
+                        {
+                            type = "string",
+                            description = "The logical name of the entity"
+                        },
+                        ["relationshipName"] = new
+                        {
+                            type = "string",
+                            description = "The schema name of the relationship"
+                        }
+                    },
+                    required = new[] { "entityLogicalName", "relationshipName" }
+                }
+            },
+            new()
+            {
                 Name = "create_record",
                 Description = "Creates a new record in a Dataverse entity",
                 InputSchema = new
@@ -436,6 +459,7 @@ public class McpServer
                 "get_entity_metadata" => await HandleGetEntityMetadataAsync(arguments),
                 "get_entity_attributes" => await HandleGetEntityAttributesAsync(arguments),
                 "get_entity_relationships" => await HandleGetEntityRelationshipsAsync(arguments),
+                "get_detailed_relationship_metadata" => await HandleGetDetailedRelationshipMetadataAsync(arguments),
                 "create_record" => await HandleCreateRecordAsync(arguments),
                 "get_record" => await HandleGetRecordAsync(arguments),
                 "update_record" => await HandleUpdateRecordAsync(arguments),
@@ -581,6 +605,61 @@ public class McpServer
             .ToList();
 
         var text = JsonSerializer.Serialize(relationshipList, _jsonOptions);
+        return new ToolResult
+        {
+            Content = new List<ContentItem>
+            {
+                new() { Type = "text", Text = text }
+            }
+        };
+    }
+
+    private async Task<ToolResult> HandleGetDetailedRelationshipMetadataAsync(Dictionary<string, JsonElement>? arguments)
+    {
+        if (arguments == null || !arguments.TryGetValue("entityLogicalName", out var entityNameElement))
+        {
+            throw new ArgumentException("entityLogicalName is required");
+        }
+
+        if (!arguments.TryGetValue("relationshipName", out var relationshipNameElement))
+        {
+            throw new ArgumentException("relationshipName is required");
+        }
+
+        var entityLogicalName = entityNameElement.GetString() ?? throw new ArgumentException("entityLogicalName cannot be null");
+        var relationshipName = relationshipNameElement.GetString() ?? throw new ArgumentException("relationshipName cannot be null");
+        
+        var relationship = await _dataverseService.GetDetailedRelationshipMetadataAsync(entityLogicalName, relationshipName);
+
+        if (relationship == null)
+        {
+            throw new ArgumentException($"Relationship '{relationshipName}' not found for entity '{entityLogicalName}'");
+        }
+
+        var relationshipDetail = new
+        {
+            schemaName = relationship.SchemaName,
+            referencingEntity = relationship.ReferencingEntity,
+            referencingAttribute = relationship.ReferencingAttribute,
+            referencedEntity = relationship.ReferencedEntity,
+            referencedAttribute = relationship.ReferencedAttribute,
+            relationshipType = relationship.RelationshipType.ToString(),
+            cascadeConfiguration = new
+            {
+                assign = relationship.CascadeConfiguration?.Assign?.ToString(),
+                delete = relationship.CascadeConfiguration?.Delete?.ToString(),
+                merge = relationship.CascadeConfiguration?.Merge?.ToString(),
+                reparent = relationship.CascadeConfiguration?.Reparent?.ToString(),
+                share = relationship.CascadeConfiguration?.Share?.ToString(),
+                unshare = relationship.CascadeConfiguration?.Unshare?.ToString(),
+                rollupView = relationship.CascadeConfiguration?.RollupView?.ToString()
+            },
+            isCustomRelationship = relationship.IsCustomRelationship,
+            isValidForAdvancedFind = relationship.IsValidForAdvancedFind,
+            securityTypes = relationship.SecurityTypes?.ToString()
+        };
+
+        var text = JsonSerializer.Serialize(relationshipDetail, _jsonOptions);
         return new ToolResult
         {
             Content = new List<ContentItem>

@@ -126,6 +126,12 @@ public class DataverseService : IDataverseService
         return entityMetadata?.OneToManyRelationships ?? Array.Empty<OneToManyRelationshipMetadata>();
     }
 
+    public async Task<OneToManyRelationshipMetadata?> GetDetailedRelationshipMetadataAsync(string entityLogicalName, string relationshipName)
+    {
+        var entityMetadata = await GetEntityMetadataAsync(entityLogicalName);
+        return entityMetadata?.OneToManyRelationships?.FirstOrDefault(r => r.SchemaName == relationshipName);
+    }
+
     public async Task<AttributeMetadata?> GetAttributeMetadataAsync(string entityLogicalName, string attributeLogicalName)
     {
         var entityMetadata = await GetEntityMetadataAsync(entityLogicalName);

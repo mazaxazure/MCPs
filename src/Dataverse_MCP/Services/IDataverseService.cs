@@ -10,6 +10,7 @@ public interface IDataverseService
     Task<EntityMetadata?> GetEntityMetadataAsync(string entityLogicalName);
     Task<IEnumerable<AttributeMetadata>> GetEntityAttributesAsync(string entityLogicalName);
     Task<IEnumerable<OneToManyRelationshipMetadata>> GetEntityRelationshipsAsync(string entityLogicalName);
+    Task<OneToManyRelationshipMetadata?> GetDetailedRelationshipMetadataAsync(string entityLogicalName, string relationshipName);
     Task<AttributeMetadata?> GetAttributeMetadataAsync(string entityLogicalName, string attributeLogicalName);
     
     // CRUD Operations
