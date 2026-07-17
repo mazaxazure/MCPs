@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Dataverse_MCP.Models;
+namespace DataverseSchema_MCP.Models;
 
 public class McpRequest
 {
