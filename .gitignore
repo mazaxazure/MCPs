@@ -58,3 +58,15 @@ nunit-*.xml
 **/appsettings.*.json
 !**/appsettings.Development.json
 *.config.json
+/.vs/MCPs/DesignTimeBuild/.dtbcache.v2
+/.vs/MCPs/v18/DocumentLayout.json
+/.vs/MCPs/v18/.suo
+/.vs/MCPs/v18/.futdcache.v2
+/.vs/MCPs/FileContentIndex/0a3854dc-1481-455b-9ce1-3abb87aa9afe.vsidx
+/.vs/MCPs/FileContentIndex/29db18a9-f7e3-492f-b67d-9ee64d8c3c57.vsidx
+/.vs/MCPs/FileContentIndex/48e6a7fd-d389-43a8-a16c-bb3ef9fc4c35.vsidx
+/.vs/MCPs/FileContentIndex/e7117b6f-21b8-43b2-ab9b-a624de8a1030.vsidx
+/.vs/MCPs/FileContentIndex/818fcf36-ff86-44fb-81a5-af2bb5947caa.vsidx
+/.vs/ProjectEvaluation/mcps.metadata.v9.bin
+/.vs/ProjectEvaluation/mcps.projects.v9.bin
+/.vs/ProjectEvaluation/mcps.strings.v9.bin

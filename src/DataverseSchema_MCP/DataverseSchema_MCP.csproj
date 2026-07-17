@@ -5,24 +5,24 @@
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>Dataverse_MCP</RootNamespace>
-    <AssemblyName>Dataverse_MCP</AssemblyName>
-    <Title>Dataverse MCP Server</Title>
-    <Description>A Model Context Protocol server for querying Dataverse metadata, including entities, attributes, relationships, and CRUD operations</Description>
+    <RootNamespace>DataverseSchema_MCP</RootNamespace>
+    <AssemblyName>DataverseSchema_MCP</AssemblyName>
+    <Title>Dataverse Schema MCP Server</Title>
+    <Description>A Model Context Protocol server for creating and modifying Dataverse metadata: tables (entities), attributes (columns) of every type, option sets and relationships</Description>
     <Version>1.0.0</Version>
     <Authors>Miguel Angel Zaragoza Checa</Authors>
-    
+
     <!-- NuGet Package Settings -->
-    <PackageId>Dataverse_MCP</PackageId>
+    <PackageId>DataverseSchema_MCP</PackageId>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>dataverse-mcp-server</ToolCommandName>
+    <ToolCommandName>dataverse-schema-mcp-server</ToolCommandName>
     <PackageType>mcpserver</PackageType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/mazaxazure/MCPs</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>mcp;dataverse;metadata;power-platform;model-context-protocol</PackageTags>
-    
+    <PackageTags>mcp;dataverse;metadata;schema;power-platform;model-context-protocol</PackageTags>
+
     <!-- Runtime Identifiers for multi-platform support -->
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <PublishAot>false</PublishAot>
